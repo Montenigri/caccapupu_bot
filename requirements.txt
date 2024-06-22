@@ -1,0 +1,3 @@
+pytz
+python-telegram-bot
+python-dotenv
