@@ -114,7 +114,8 @@ async def last_time(update: Update, context: CallbackContext) -> None:
     for user_id, last_date in results:
         username = await get_username(context, group_id, user_id)
         last_date_dt = datetime.fromisoformat(last_date)
-        last_date_dt = pytz.utc.localize(last_date_dt)
+        if not last_date_dt.tzinfo:
+            last_date_dt = pytz.utc.localize(last_date_dt)
         last_date_formatted = last_date_dt.strftime('%d-%m %H:%M')
         time_diff = datetime.now(timezone.utc) - last_date_dt
         
