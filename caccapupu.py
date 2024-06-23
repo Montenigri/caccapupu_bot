@@ -98,6 +98,38 @@ async def all_time(update: Update, context: CallbackContext) -> None:
     await update.message.reply_text(response)
 
 
+def format_time_ago(time_diff: datetime) -> str:
+    
+    days = time_diff.days
+    hours = (time_diff.seconds // 3600) % 24
+    minutes = (time_diff.seconds // 60) % 60
+
+    if days > 0:
+        if days == 1:
+            days_str = f"{days} giorno"
+        else:
+            days_str = f"{days} giorni"
+        if hours == 1:
+            hours_str = f"{hours} ora"
+        else:
+            hours_str = f"{hours} ore"
+        return f"{days_str} e {hours_str} fa"
+    elif hours > 0:
+        if hours == 1:
+            hours_str = f"{hours} ora"
+        else:
+            hours_str = f"{hours} ore"
+        if minutes == 1:
+            minutes_str = f"{minutes} minuto"
+        else:
+            minutes_str = f"{minutes} minuti"
+        return f"{hours_str} e {minutes_str} fa"
+    else:
+        if minutes == 1:
+            return f"{minutes} minuto fa"
+        else:
+            return f"{minutes} minuti fa"
+
 async def last_time(update: Update, context: CallbackContext) -> None:
     group_id = update.message.chat_id
     
@@ -118,25 +150,8 @@ async def last_time(update: Update, context: CallbackContext) -> None:
             last_date_dt = pytz.utc.localize(last_date_dt)
         last_date_formatted = last_date_dt.strftime('%d-%m %H:%M')
         time_diff = datetime.now(timezone.utc) - last_date_dt
-        
-        if time_diff.days > 0:
-            if time_diff.days == 1:
-                time_ago = f"{time_diff.days} giorno fa"
-            else:
-                time_ago = f"{time_diff.days} giorni fa"
-        elif time_diff.seconds // 3600 > 0:
-            if time_diff.seconds // 3600 == 1:
-                time_ago = f"{time_diff.seconds // 3600} ora fa"
-            else:
-                time_ago = f"{time_diff.seconds // 3600} ore fa"
-        elif time_diff.seconds // 60 > 0:
-            if time_diff.seconds // 60 == 1:
-                time_ago = f"{time_diff.seconds // 60} minuto fa"
-            else: 
-                time_ago = f"{time_diff.seconds // 60} minuti fa"
-        else:
-            time_ago = "meno di un minuto fa"
-        
+        time_ago = format_time_ago(time_diff)
+            
         response += f"{username}: {last_date_formatted} ({time_ago})\n"
     
     await update.message.reply_text(response)
