@@ -159,7 +159,7 @@ async def last_time(update: Update, context: CallbackContext) -> None:
     
 async def current_month(update: Update, context: CallbackContext) -> None:
     group_id = update.message.chat_id
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     
     with conn:
