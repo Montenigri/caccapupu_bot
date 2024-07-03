@@ -156,6 +156,29 @@ async def last_time(update: Update, context: CallbackContext) -> None:
     
     await update.message.reply_text(response)
 
+    
+async def current_month(update: Update, context: CallbackContext) -> None:
+    group_id = update.message.chat_id
+    now = datetime.utcnow()
+    start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    
+    with conn:
+        c.execute('''SELECT user_id, COUNT(*) 
+                     FROM emoji_count 
+                     WHERE group_id = ? AND date >= ? 
+                     GROUP BY user_id 
+                     ORDER BY COUNT(*) DESC''', 
+                  (group_id, start_of_month.isoformat()))
+        results = c.fetchall()
+    
+    response = "Conteggio delle emoji nel mese corrente:\n"
+    for user_id, count in results:
+        username = await get_username(context, group_id, user_id)
+        response += f"{username}: {count}\n"
+    
+    await update.message.reply_text(response)
+
+
 def main() -> None:
     
     app = ApplicationBuilder().token(token).build()
