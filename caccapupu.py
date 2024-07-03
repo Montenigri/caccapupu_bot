@@ -187,6 +187,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("lastmonth", last_month))
+    app.add_handler(CommandHandler("currentmonth", current_month))
     app.add_handler(CommandHandler("all", all_time))
     app.add_handler(CommandHandler("lasttime", last_time))
     app.add_handler(MessageHandler(filters.TEXT, count_emoji))
