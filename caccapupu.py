@@ -179,6 +179,96 @@ async def current_month(update: Update, context: CallbackContext) -> None:
     await update.message.reply_text(response)
 
 
+
+
+async def personal_stats(update: Update, context: CallbackContext) -> None:
+    group_id = update.message.chat_id
+    user_id = update.message.from_user.id
+    
+    with conn:
+        # Recupera tutte le date di invio delle emoji per l'utente
+        c.execute('''SELECT date 
+                     FROM emoji_count 
+                     WHERE group_id = ? AND user_id = ? 
+                     ORDER BY date ASC''', 
+                  (group_id, user_id))
+        dates = c.fetchall()
+    
+    # Se l'utente non ha inviato nessuna emoji
+    if not dates:
+        update.message.reply_text("Non hai ancora inviato alcuna emoji in questo gruppo.")
+        return
+    
+    # Conversione delle date in datetime
+    date_times = [datetime.fromisoformat(date[0]) for date in dates]
+    total_emojis = len(date_times)
+    
+    # Calcolo del tempo totale in giorni
+    total_days = (datetime.utcnow() - date_times[0]).days + 1  # +1 per includere il giorno corrente
+    frequency_per_day = total_emojis / total_days
+
+    # Calcolo della distanza media tra le emoji
+    time_diffs = [(date_times[i+1] - date_times[i]).total_seconds() for i in range(len(date_times) - 1)]
+    if time_diffs:
+        avg_time_diff_seconds = sum(time_diffs) / len(time_diffs)
+        avg_time_diff_hours = avg_time_diff_seconds / 3600
+    else:
+        avg_time_diff_hours = 0
+    
+    # Calcolo della distanza massima e minima tra emoji
+    if time_diffs:
+        max_time_diff_seconds = max(time_diffs)
+        min_time_diff_seconds = min(time_diffs)
+        max_time_diff_hours = max_time_diff_seconds / 3600
+        min_time_diff_minutes = min_time_diff_seconds / 60
+    else:
+        max_time_diff_hours = 0
+        min_time_diff_minutes = 0
+
+    # Calcolo del giorno della settimana e dell'ora più frequenti
+    weekdays = [dt.weekday() for dt in date_times]  # 0 = Lunedì, ..., 6 = Domenica
+    hours = [dt.hour for dt in date_times]
+    
+    most_common_weekday = max(set(weekdays), key=weekdays.count)
+    most_common_hour = max(set(hours), key=hours.count)
+    
+    weekday_names = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato', 'Domenica']
+    most_common_weekday_name = weekday_names[most_common_weekday]
+    
+    # Informazioni sull'ultima emoji inviata
+    last_emoji_date = date_times[-1]
+
+    # Informazioni sulla prima e ultima emoji del giorno
+    first_emoji_of_day = min(date_times).strftime('%H:%M')
+    last_emoji_of_day = max(date_times).strftime('%H:%M')
+
+    # Confronto weekend vs giorni feriali
+    weekdays_count = sum(1 for wd in weekdays if wd < 5)  # Lunedì-Venerdì
+    weekends_count = sum(1 for wd in weekdays if wd >= 5)  # Sabato-Domenica
+    
+    # Formattazione delle informazioni
+    response = (
+        f"Statistiche personali per {update.message.from_user.username}:\n\n"
+        f"Totale emoji inviate: {total_emojis}\n"
+        f"Frequenza di invio: {frequency_per_day:.2f} emoji al giorno\n"
+        f"Distanza media tra le emoji: {avg_time_diff_hours:.2f} ore\n"
+        f"Distanza massima tra le emoji: {max_time_diff_hours:.2f} ore\n"
+        f"Distanza minima tra le emoji: {min_time_diff_minutes:.2f} minuti\n"
+        f"Ultima emoji inviata: {last_emoji_date.strftime('%d-%m-%Y %H:%M')}\n"
+        f"Tempo trascorso dall'ultima emoji: {format_time_ago(last_emoji_date)}\n\n"
+        f"Orario più frequente di invio: {most_common_hour}:00\n"
+        f"Giorno più attivo della settimana: {most_common_weekday_name}\n\n"
+        f"Prima emoji del giorno inviata alle: {first_emoji_of_day}\n"
+        f"Ultima emoji del giorno inviata alle: {last_emoji_of_day}\n\n"
+        f"Emoji inviate nei giorni feriali: {weekdays_count}\n"
+        f"Emoji inviate nei weekend: {weekends_count}\n"
+        f"Percentuale di emoji inviate nei weekend: {weekends_count / total_emojis * 100:.2f}%"
+        f"Percentuale di emoji inviate nei giorni feriali: {weekdays_count / total_emojis * 100:.2f}%"
+    )
+    
+    update.message.reply_text(response)
+
+
 def main() -> None:
     
     app = ApplicationBuilder().token(token).build()
