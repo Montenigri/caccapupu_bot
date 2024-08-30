@@ -280,6 +280,8 @@ def main() -> None:
     app.add_handler(CommandHandler("currentmonth", current_month))
     app.add_handler(CommandHandler("all", all_time))
     app.add_handler(CommandHandler("lasttime", last_time))
+    app.add_handler(CommandHandler("personalStat", personal_stats))
+
     app.add_handler(MessageHandler(filters.TEXT, count_emoji))
 
     app.run_polling()
