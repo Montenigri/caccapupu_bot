@@ -200,12 +200,13 @@ def calculate_user_stats(dates: list[datetime]) -> dict:
         }
 
     # Calcolo del tempo totale in giorni
-    total_days = (datetime.now(timezone.utc) - dates[0]).days + 1
+    total_days = (datetime.now(timezone.utc).replace(tzinfo=None) - dates[0]).days + 1
 
     frequency_per_day = total_emojis / total_days
 
     # Calcolo della distanza media tra le emoji
-    time_diffs = [(dates[i+1] - dates[i]).total_seconds() for i in range(total_emojis - 1)]
+    time_diffs = [(dates[i+1] - dates[i]).total_seconds() for i in range(total_emojis - 1) if dates[i+1].tzinfo is not None and dates[i].tzinfo is not None]
+
     avg_time_diff_hours = sum(time_diffs) / len(time_diffs) / 3600 if time_diffs else 0
 
     weekdays = [dt.weekday() for dt in dates]  # 0 = Lunedì, ..., 6 = Domenica
@@ -325,13 +326,13 @@ async def personal_stats(update: Update, context: CallbackContext) -> None:
     response = (
         f"Statistiche personali per {update.message.from_user.username}:\n\n"
         f"Totale emoji inviate: {user_stats['total_emojis']}\n"
-        f"Frequenza di invio (utente): {user_stats['frequency_per_day']:.2f} emoji al giorno\n"
+        f"Frequenza di invio ({update.message.from_user.username}): {user_stats['frequency_per_day']:.2f} emoji al giorno\n"
         f"Frequenza di invio media (gruppo): {group_avg_stats['frequency_per_day']:.2f} emoji al giorno\n\n"
-        f"Distanza media tra le emoji (utente): {user_stats['avg_time_diff_hours']:.2f} ore\n"
+        f"Distanza media tra le emoji ({update.message.from_user.username}): {user_stats['avg_time_diff_hours']:.2f} ore\n"
         f"Distanza media tra le emoji (media gruppo): {group_avg_stats['avg_time_diff_hours']:.2f} ore\n\n"
-        f"Giorno più attivo (utente): {most_common_user_weekday_name}\n"
+        f"Giorno più attivo ({update.message.from_user.username}): {most_common_user_weekday_name}\n"
         f"Giorno più attivo (media gruppo): {most_common_group_weekday_name}\n\n"
-        f"Orario più frequente di invio (utente): {user_stats['most_common_hour']}:00\n"
+        f"Orario più frequente di invio ({update.message.from_user.username}): {user_stats['most_common_hour']}:00\n"
         f"Orario più frequente di invio (media gruppo): {group_avg_stats['most_common_hour']}:00\n"
     )
     
