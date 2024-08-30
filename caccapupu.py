@@ -180,93 +180,162 @@ async def current_month(update: Update, context: CallbackContext) -> None:
 
 
 
+def calculate_user_stats(dates: list[datetime]) -> dict:
+    """
+    Calcola le statistiche di utilizzo delle emoji per un singolo utente.
 
-async def personal_stats(update: Update, context: CallbackContext) -> None:
-    group_id = update.message.chat_id
-    user_id = update.message.from_user.id
+    :param dates: Una lista di oggetti datetime che rappresentano i momenti in cui sono state inviate le emoji.
+    :return: Un dizionario con le statistiche calcolate.
+    """
+    total_emojis = len(dates)
     
+    if total_emojis == 0:
+        return {
+            "total_emojis": 0,
+            "frequency_per_day": 0,
+            "avg_time_diff_hours": 0,
+            "most_common_weekday": None,
+            "most_common_hour": None,
+            "last_emoji_date": None
+        }
+
+    # Calcolo del tempo totale in giorni
+    total_days = (datetime.now(timezone.utc) - dates[0]).days + 1
+
+    frequency_per_day = total_emojis / total_days
+
+    # Calcolo della distanza media tra le emoji
+    time_diffs = [(dates[i+1] - dates[i]).total_seconds() for i in range(total_emojis - 1)]
+    avg_time_diff_hours = sum(time_diffs) / len(time_diffs) / 3600 if time_diffs else 0
+
+    weekdays = [dt.weekday() for dt in dates]  # 0 = Lunedì, ..., 6 = Domenica
+    hours = [dt.hour for dt in dates]
+
+    most_common_weekday = max(set(weekdays), key=weekdays.count) if weekdays else None
+    most_common_hour = max(set(hours), key=hours.count) if hours else None
+
+    last_emoji_date = dates[-1] if dates else None
+
+    return {
+        "total_emojis": total_emojis,
+        "frequency_per_day": frequency_per_day,
+        "avg_time_diff_hours": avg_time_diff_hours,
+        "most_common_weekday": most_common_weekday,
+        "most_common_hour": most_common_hour,
+        "last_emoji_date": last_emoji_date
+    }
+
+
+def get_user_and_group_stats(group_id: int, user_id: int) -> dict:
+    """
+    Calcola le statistiche per un utente specifico e le medie per il gruppo di appartenenza.
+
+    :param group_id: L'ID del gruppo Telegram.
+    :param user_id: L'ID dell'utente Telegram.
+    :return: Un dizionario con le statistiche dell'utente e le medie del gruppo.
+    """
     with conn:
-        # Recupera tutte le date di invio delle emoji per l'utente
+        # Recupera tutte le date di invio delle emoji per l'utente specifico
         c.execute('''SELECT date 
                      FROM emoji_count 
                      WHERE group_id = ? AND user_id = ? 
                      ORDER BY date ASC''', 
                   (group_id, user_id))
-        dates = c.fetchall()
+        user_dates = c.fetchall()
+
+        # Recupera tutte le date di invio delle emoji per tutti gli utenti del gruppo
+        c.execute('''SELECT user_id, date 
+                     FROM emoji_count 
+                     WHERE group_id = ? 
+                     ORDER BY user_id, date ASC''', 
+                  (group_id,))
+        group_data = c.fetchall()
     
-    # Se l'utente non ha inviato nessuna emoji
-    if not dates:
-        update.message.reply_text("Non hai ancora inviato alcuna emoji in questo gruppo.")
+    if not user_dates:
+        return {
+            "error": "L'utente non ha ancora inviato alcuna emoji in questo gruppo."
+        }
+
+    # Trasforma le date in oggetti datetime
+    user_date_times = [datetime.fromisoformat(date[0]) for date in user_dates]
+
+    # Calcola le statistiche per l'utente specifico
+    user_stats = calculate_user_stats(user_date_times)
+
+    # Organizza i dati per ogni utente nel gruppo
+    group_user_stats = {}
+    for uid, date_str in group_data:
+        date_time = datetime.fromisoformat(date_str)
+        if uid not in group_user_stats:
+            group_user_stats[uid] = []
+        group_user_stats[uid].append(date_time)
+
+    # Aggrega le statistiche per il gruppo
+    group_stats_aggregate = {
+        "total_emojis": 0,
+        "frequency_per_day": 0,
+        "avg_time_diff_hours": 0,
+        "most_common_weekday": [],
+        "most_common_hour": [],
+    }
+    
+    total_users = len(group_user_stats)
+
+    for dates in group_user_stats.values():
+        stats = calculate_user_stats(dates)
+        group_stats_aggregate["total_emojis"] += stats["total_emojis"]
+        group_stats_aggregate["frequency_per_day"] += stats["frequency_per_day"]
+        group_stats_aggregate["avg_time_diff_hours"] += stats["avg_time_diff_hours"]
+        group_stats_aggregate["most_common_weekday"].append(stats["most_common_weekday"])
+        group_stats_aggregate["most_common_hour"].append(stats["most_common_hour"])
+
+    # Calcolo delle medie per il gruppo
+    avg_group_stats = {
+        "total_emojis": group_stats_aggregate["total_emojis"] / total_users,
+        "frequency_per_day": group_stats_aggregate["frequency_per_day"] / total_users,
+        "avg_time_diff_hours": group_stats_aggregate["avg_time_diff_hours"] / total_users,
+        "most_common_weekday": max(set(group_stats_aggregate["most_common_weekday"]), key=group_stats_aggregate["most_common_weekday"].count),
+        "most_common_hour": max(set(group_stats_aggregate["most_common_hour"]), key=group_stats_aggregate["most_common_hour"].count),
+    }
+
+    return {
+        "user_stats": user_stats,
+        "group_avg_stats": avg_group_stats
+    }
+
+
+
+async def personal_stats(update: Update, context: CallbackContext) -> None:
+    group_id = update.message.chat_id
+    user_id = update.message.from_user.id
+
+    stats = get_user_and_group_stats(group_id, user_id)
+    
+    if "error" in stats:
+        update.message.reply_text(stats["error"])
         return
     
-    # Conversione delle date in datetime
-    date_times = [datetime.fromisoformat(date[0]) for date in dates]
-    total_emojis = len(date_times)
-    
-    # Calcolo del tempo totale in giorni
-    total_days = (datetime.utcnow() - date_times[0]).days + 1  # +1 per includere il giorno corrente
-    frequency_per_day = total_emojis / total_days
+    user_stats = stats["user_stats"]
+    group_avg_stats = stats["group_avg_stats"]
 
-    # Calcolo della distanza media tra le emoji
-    time_diffs = [(date_times[i+1] - date_times[i]).total_seconds() for i in range(len(date_times) - 1)]
-    if time_diffs:
-        avg_time_diff_seconds = sum(time_diffs) / len(time_diffs)
-        avg_time_diff_hours = avg_time_diff_seconds / 3600
-    else:
-        avg_time_diff_hours = 0
-    
-    # Calcolo della distanza massima e minima tra emoji
-    if time_diffs:
-        max_time_diff_seconds = max(time_diffs)
-        min_time_diff_seconds = min(time_diffs)
-        max_time_diff_hours = max_time_diff_seconds / 3600
-        min_time_diff_minutes = min_time_diff_seconds / 60
-    else:
-        max_time_diff_hours = 0
-        min_time_diff_minutes = 0
-
-    # Calcolo del giorno della settimana e dell'ora più frequenti
-    weekdays = [dt.weekday() for dt in date_times]  # 0 = Lunedì, ..., 6 = Domenica
-    hours = [dt.hour for dt in date_times]
-    
-    most_common_weekday = max(set(weekdays), key=weekdays.count)
-    most_common_hour = max(set(hours), key=hours.count)
-    
     weekday_names = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato', 'Domenica']
-    most_common_weekday_name = weekday_names[most_common_weekday]
-    
-    # Informazioni sull'ultima emoji inviata
-    last_emoji_date = date_times[-1]
+    most_common_user_weekday_name = weekday_names[user_stats["most_common_weekday"]]
+    most_common_group_weekday_name = weekday_names[group_avg_stats["most_common_weekday"]]
 
-    # Informazioni sulla prima e ultima emoji del giorno
-    first_emoji_of_day = min(date_times).strftime('%H:%M')
-    last_emoji_of_day = max(date_times).strftime('%H:%M')
-
-    # Confronto weekend vs giorni feriali
-    weekdays_count = sum(1 for wd in weekdays if wd < 5)  # Lunedì-Venerdì
-    weekends_count = sum(1 for wd in weekdays if wd >= 5)  # Sabato-Domenica
-    
-    # Formattazione delle informazioni
     response = (
         f"Statistiche personali per {update.message.from_user.username}:\n\n"
-        f"Totale emoji inviate: {total_emojis}\n"
-        f"Frequenza di invio: {frequency_per_day:.2f} emoji al giorno\n"
-        f"Distanza media tra le emoji: {avg_time_diff_hours:.2f} ore\n"
-        f"Distanza massima tra le emoji: {max_time_diff_hours:.2f} ore\n"
-        f"Distanza minima tra le emoji: {min_time_diff_minutes:.2f} minuti\n"
-        f"Ultima emoji inviata: {last_emoji_date.strftime('%d-%m-%Y %H:%M')}\n"
-        f"Tempo trascorso dall'ultima emoji: {format_time_ago(last_emoji_date)}\n\n"
-        f"Orario più frequente di invio: {most_common_hour}:00\n"
-        f"Giorno più attivo della settimana: {most_common_weekday_name}\n\n"
-        f"Prima emoji del giorno inviata alle: {first_emoji_of_day}\n"
-        f"Ultima emoji del giorno inviata alle: {last_emoji_of_day}\n\n"
-        f"Emoji inviate nei giorni feriali: {weekdays_count}\n"
-        f"Emoji inviate nei weekend: {weekends_count}\n"
-        f"Percentuale di emoji inviate nei weekend: {weekends_count / total_emojis * 100:.2f}%"
-        f"Percentuale di emoji inviate nei giorni feriali: {weekdays_count / total_emojis * 100:.2f}%"
+        f"Totale emoji inviate: {user_stats['total_emojis']}\n"
+        f"Frequenza di invio (utente): {user_stats['frequency_per_day']:.2f} emoji al giorno\n"
+        f"Frequenza di invio media (gruppo): {group_avg_stats['frequency_per_day']:.2f} emoji al giorno\n\n"
+        f"Distanza media tra le emoji (utente): {user_stats['avg_time_diff_hours']:.2f} ore\n"
+        f"Distanza media tra le emoji (media gruppo): {group_avg_stats['avg_time_diff_hours']:.2f} ore\n\n"
+        f"Giorno più attivo (utente): {most_common_user_weekday_name}\n"
+        f"Giorno più attivo (media gruppo): {most_common_group_weekday_name}\n\n"
+        f"Orario più frequente di invio (utente): {user_stats['most_common_hour']}:00\n"
+        f"Orario più frequente di invio (media gruppo): {group_avg_stats['most_common_hour']}:00\n"
     )
     
-    update.message.reply_text(response)
+    await update.message.reply_text(response)
 
 
 def main() -> None:
