@@ -5,6 +5,8 @@ import pytz
 from telegram import Update
 from telegram.ext import ApplicationBuilder, Updater, CommandHandler, MessageHandler, filters, CallbackContext
 import dotenv
+import matplotlib.pyplot as plt
+import io
 
 token = dotenv.dotenv_values()["BOT_TOKEN"]
 logging.basicConfig(
@@ -338,6 +340,72 @@ async def personal_stats(update: Update, context: CallbackContext) -> None:
     
     await update.message.reply_text(response)
 
+async def chart(update: Update, context: CallbackContext) -> None:
+    group_id = update.message.chat_id
+    message = update.message.text
+    user_id = update.message.from_user.id
+
+    date_delta = {
+        "settimana": 7,
+        "mese": 30,
+        "anno": 365
+    }
+    if message not in ["/chart settimana", "/chart mese", "/chart anno"]:
+        await update.message.reply_text("Uso corretto: /chart [settimana|mese|anno]")
+        return
+
+    period_type = message.split()[1]
+    days = date_delta[period_type]
+    selected_delta = datetime.now(timezone.utc) - timedelta(days=days)
+
+    with conn:
+        c.execute('''SELECT user_id, date 
+                    FROM emoji_count 
+                    WHERE user_id = ? AND group_id = ? AND date >= ? 
+                    ORDER BY date ASC''', 
+                (user_id, group_id, selected_delta.isoformat()))
+        data = c.fetchall()
+
+    if not data:
+        await update.message.reply_text("Nessun dato disponibile per il grafico.")
+        return
+
+    # Organizza i dati in base al periodo
+    time_counts = {}
+    for user_id, date_str in data:
+        date = datetime.fromisoformat(date_str)
+        if period_type == "settimana":
+            time_key = date.strftime('%d/%m')  # Giorno per giorno
+        elif period_type == "mese":
+            week_num = (date.day - 1) // 7 + 1
+            time_key = f"Sett. {week_num}"  # Settimana per settimana
+        else:  # anno
+            time_key = date.strftime('%b')  # Mese per mese     
+        if time_key not in time_counts:
+            time_counts[time_key] = 0
+        time_counts[time_key] += 1
+
+    # Prepara i dati per il grafico
+    time_labels = list(time_counts.keys())
+    counts = list(time_counts.values())
+
+    # Crea il grafico quadrato
+    plt.figure(figsize=(8, 8))
+    plt.plot(time_labels, counts, color='skyblue', linewidth=3.0)
+    plt.ylabel('Numero di cacche')
+    plt.title('Le tue cacche')
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+
+    # Salva il grafico in un buffer
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png')
+    buf.seek(0)
+    plt.close()
+
+    # Invia il grafico come immagine
+    await update.message.reply_photo(photo=buf)
+    buf.close()
 
 def main() -> None:
     
@@ -350,8 +418,8 @@ def main() -> None:
     app.add_handler(CommandHandler("currentmonth", current_month))
     app.add_handler(CommandHandler("all", all_time))
     app.add_handler(CommandHandler("lasttime", last_time))
-    app.add_handler(CommandHandler("personalStat", personal_stats))
-
+    app.add_handler(CommandHandler("personalstat", personal_stats))
+    app.add_handler(CommandHandler("chart", chart))
     app.add_handler(MessageHandler(filters.TEXT, count_emoji))
 
     app.run_polling()
