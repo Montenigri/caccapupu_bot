@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Syntax check
+        run: python -m py_compile caccapupu.py
+
+      - name: Import smoke test
+        run: python -c "import caccapupu; print('ok')"
+
+  deploy-vps:
+    needs: lint-and-smoke
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: caccapupu
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Copy project files to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          source: "caccapupu.py,requirements.txt,Dockerfile,.dockerignore"
+          target: ${{ secrets.VPS_APP_DIR }}
+          overwrite: true
+
+      - name: Deploy container on VPS
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          envs: VPS_APP_DIR,VPS_ENV_FILE,VPS_DB_DIR
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            APP_DIR="${VPS_APP_DIR}"
+            ENV_FILE="${VPS_ENV_FILE}"
+            DB_DIR="${VPS_DB_DIR}"
+            CONTAINER_NAME="caccapupu_bot"
+            IMAGE_NAME="caccapupu_bot:latest"
+
+            if [ ! -f "${ENV_FILE}" ]; then
+              echo "Errore: file env non trovato in ${ENV_FILE}"
+              exit 1
+            fi
+
+            mkdir -p "${APP_DIR}"
+            mkdir -p "${DB_DIR}"
+
+            cd "${APP_DIR}"
+
+            # Se non esiste ancora il DB host-side, prova a recuperarlo dal vecchio container.
+            if [ ! -f "${DB_DIR}/emoji_count.db" ] && docker ps -a --format '{{.Names}}' | grep -Fxq "${CONTAINER_NAME}"; then
+              mkdir -p /tmp/caccapupu_recovery
+              if docker cp "${CONTAINER_NAME}:/app/data/emoji_count.db" /tmp/caccapupu_recovery/emoji_count.db 2>/dev/null; then
+                mv /tmp/caccapupu_recovery/emoji_count.db "${DB_DIR}/emoji_count.db"
+                echo "Database recuperato dal vecchio container"
+              fi
+              rm -rf /tmp/caccapupu_recovery || true
+            fi
+
+            docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+
+            docker build -t "${IMAGE_NAME}" .
+
+            docker run -d \
+              --name "${CONTAINER_NAME}" \
+              --restart unless-stopped \
+              --env-file "${ENV_FILE}" \
+              -e DB_DIR=/app/data \
+              -v "${DB_DIR}:/app/data" \
+              "${IMAGE_NAME}"
+        env:
+          VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
+          VPS_ENV_FILE: ${{ secrets.VPS_ENV_FILE }}
+          VPS_DB_DIR: ${{ secrets.VPS_DB_DIR }}

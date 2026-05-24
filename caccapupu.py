@@ -1,42 +1,59 @@
 import logging
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
-import pytz
-from telegram import Update
-from telegram.ext import ApplicationBuilder, Updater, CommandHandler, MessageHandler, filters, CallbackContext
+from telegram import BotCommand, BotCommandScopeAllGroupChats, Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 import dotenv
 import matplotlib.pyplot as plt
 import io
 
-token = dotenv.dotenv_values()["BOT_TOKEN"]
+dotenv.load_dotenv()
+token = os.getenv("BOT_TOKEN", "")
+
+log_level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+log_level = getattr(logging, log_level_name, logging.INFO)
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.WARNING
+    level=log_level
 )
 logger = logging.getLogger(__name__)
 
-conn = sqlite3.connect('emoji_count.db')
-c = conn.cursor()
-c.execute('''CREATE TABLE IF NOT EXISTS emoji_count
+DB_DIR = os.getenv("DB_DIR", "data")
+os.makedirs(DB_DIR, exist_ok=True)
+DB_PATH = os.path.join(DB_DIR, "emoji_count.db")
+
+conn = sqlite3.connect(DB_PATH)
+conn.execute("PRAGMA journal_mode=WAL")
+conn.execute("PRAGMA synchronous=NORMAL")
+conn.execute('''CREATE TABLE IF NOT EXISTS emoji_count
              (group_id INTEGER, user_id INTEGER, date TEXT)''')
+conn.execute('''CREATE INDEX IF NOT EXISTS idx_emoji_group_date
+             ON emoji_count (group_id, date)''')
+conn.execute('''CREATE INDEX IF NOT EXISTS idx_emoji_group_user_date
+             ON emoji_count (group_id, user_id, date)''')
 conn.commit()
 
 # Emoji da contare
 TARGET_EMOJI = '💩'  
 
-async def start(update: Update, context: CallbackContext) -> None:
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("Bot avviato! Conta cacche attivata.")
 
-async def get_username(context: CallbackContext, group_id: int, user_id: int) -> str:
+async def get_username(context: ContextTypes.DEFAULT_TYPE, group_id: int, user_id: int) -> str:
+    cache = context.chat_data.setdefault("username_cache", {})
+    if user_id in cache:
+        return cache[user_id]
     try:
         member = await context.bot.get_chat_member(group_id, user_id)
         username = member.user.username or f"{member.user.first_name} {member.user.last_name or ''}".strip()
+        cache[user_id] = username
         return username
     except Exception as e:
         logger.error(f"Errore nel recuperare l'username per user_id {user_id} in group_id {group_id}: {e}")
         return "Unknown"
 
-async def help_command(update: Update, context: CallbackContext) -> None:
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("Questo bot conta una particolare emoji nei gruppi.\n"
                               "/start - Avvia il bot\n"
                               "/lastmonth - Mostra il conteggio delle emoji dell'ultimo mese\n"
@@ -44,7 +61,9 @@ async def help_command(update: Update, context: CallbackContext) -> None:
                               "/help - Mostra questo \n"
                               "Se vuoi offrirmi un caffé ecco il link https://www.buymeacoffee.com/montenigri")
 
-async def count_emoji(update: Update, context: CallbackContext) -> None:
+async def count_emoji(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.message.text:
+        return
     message = update.message.text
     if TARGET_EMOJI in message:
         group_id = update.message.chat_id
@@ -54,50 +73,53 @@ async def count_emoji(update: Update, context: CallbackContext) -> None:
         #print(f"User {user_id} used the emoji {TARGET_EMOJI} in group {group_id} at {date}")
         
         with conn:
-            c.execute("INSERT INTO emoji_count (group_id, user_id, date) VALUES (?, ?, ?)", (group_id, user_id, date))
+            conn.execute("INSERT INTO emoji_count (group_id, user_id, date) VALUES (?, ?, ?)", (group_id, user_id, date))
 
-async def last_month(update: Update, context: CallbackContext) -> None:
+async def last_month(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     group_id = update.message.chat_id
     one_month_ago = datetime.now(timezone.utc) - timedelta(days=30)
     
     with conn:
-        c.execute("SELECT user_id, COUNT(*) FROM emoji_count WHERE group_id = ? AND date >= ? GROUP BY user_id ORDER BY COUNT(*) DESC", 
-                  (group_id, one_month_ago.isoformat()))
-        results = c.fetchall()
+        results = conn.execute(
+            "SELECT user_id, COUNT(*) FROM emoji_count WHERE group_id = ? AND date >= ? GROUP BY user_id ORDER BY COUNT(*) DESC",
+            (group_id, one_month_ago.isoformat())
+        ).fetchall()
     
-    response = "Conteggio delle cacche nell'ultimo mese:\n"
+    lines = ["Conteggio delle cacche nell'ultimo mese:"]
     for user_id, count in results:
         username = await get_username(context, group_id, user_id)
-        response += f"{username}: {count}\n"
+        lines.append(f"{username}: {count}")
     
-    await update.message.reply_text(response)
+    await update.message.reply_text("\n".join(lines))
 
-async def all_time(update: Update, context: CallbackContext) -> None:
+async def all_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     group_id = update.message.chat_id
 
     with conn:
-        c.execute('''SELECT user_id, COUNT(*), MIN(date) 
+        results = conn.execute(
+            '''SELECT user_id, COUNT(*), MIN(date) 
                      FROM emoji_count 
                      WHERE group_id = ? 
                      GROUP BY user_id 
-                     ORDER BY COUNT(*) DESC''', 
-                  (group_id,))
-        results = c.fetchall()
-        
-        c.execute('''SELECT MIN(date) 
+                     ORDER BY COUNT(*) DESC''',
+            (group_id,)
+        ).fetchall()
+
+        first_date_result = conn.execute(
+            '''SELECT MIN(date) 
                      FROM emoji_count 
-                     WHERE group_id = ?''', 
-                  (group_id,))
-        first_date_result = c.fetchone()
+                     WHERE group_id = ?''',
+            (group_id,)
+        ).fetchone()
         first_date = first_date_result[0] if first_date_result else None
         first_date_formatted = datetime.fromisoformat(first_date).strftime('%d/%m/%Y') if first_date else "N/A"
     
-    response = f"Conteggio totale delle emoji (prima cacca registrata il {first_date_formatted}):\n"
+    lines = [f"Conteggio totale delle emoji (prima cacca registrata il {first_date_formatted}):"]
     for user_id, count, _ in results:
         username = await get_username(context, group_id, user_id)
-        response += f"{username}: {count}\n"
+        lines.append(f"{username}: {count}")
     
-    await update.message.reply_text(response)
+    await update.message.reply_text("\n".join(lines))
 
 
 def format_time_ago(time_diff: datetime) -> str:
@@ -132,53 +154,56 @@ def format_time_ago(time_diff: datetime) -> str:
         else:
             return f"{minutes} minuti fa"
 
-async def last_time(update: Update, context: CallbackContext) -> None:
+async def last_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     group_id = update.message.chat_id
     
     with conn:
-        c.execute('''SELECT user_id, MAX(date) 
+        results = conn.execute(
+            '''SELECT user_id, MAX(date) 
                      FROM emoji_count 
                      WHERE group_id = ? 
                      GROUP BY user_id 
-                     ORDER BY MAX(date) DESC''', 
-                  (group_id,))
-        results = c.fetchall()
+                     ORDER BY MAX(date) DESC''',
+            (group_id,)
+        ).fetchall()
     
     response = "Ultima volta che ogni utente ha inviato l'emoji:\n"
+    lines = ["Ultima volta che ogni utente ha inviato l'emoji:"]
     for user_id, last_date in results:
         username = await get_username(context, group_id, user_id)
         last_date_dt = datetime.fromisoformat(last_date)
         if not last_date_dt.tzinfo:
-            last_date_dt = pytz.utc.localize(last_date_dt)
+            last_date_dt = last_date_dt.replace(tzinfo=timezone.utc)
         last_date_formatted = last_date_dt.strftime('%d-%m %H:%M')
         time_diff = datetime.now(timezone.utc) - last_date_dt
         time_ago = format_time_ago(time_diff)
             
-        response += f"{username}: {last_date_formatted} ({time_ago})\n"
+        lines.append(f"{username}: {last_date_formatted} ({time_ago})")
     
-    await update.message.reply_text(response)
+    await update.message.reply_text("\n".join(lines))
 
     
-async def current_month(update: Update, context: CallbackContext) -> None:
+async def current_month(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     group_id = update.message.chat_id
     now = datetime.now(timezone.utc)
     start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     
     with conn:
-        c.execute('''SELECT user_id, COUNT(*) 
+        results = conn.execute(
+            '''SELECT user_id, COUNT(*) 
                      FROM emoji_count 
                      WHERE group_id = ? AND date >= ? 
                      GROUP BY user_id 
-                     ORDER BY COUNT(*) DESC''', 
-                  (group_id, start_of_month.isoformat()))
-        results = c.fetchall()
+                     ORDER BY COUNT(*) DESC''',
+            (group_id, start_of_month.isoformat())
+        ).fetchall()
     
-    response = "Conteggio delle emoji nel mese corrente:\n"
+    lines = ["Conteggio delle emoji nel mese corrente:"]
     for user_id, count in results:
         username = await get_username(context, group_id, user_id)
-        response += f"{username}: {count}\n"
+        lines.append(f"{username}: {count}")
     
-    await update.message.reply_text(response)
+    await update.message.reply_text("\n".join(lines))
 
 
 
@@ -201,23 +226,33 @@ def calculate_user_stats(dates: list[datetime]) -> dict:
             "last_emoji_date": None
         }
 
+    normalized_dates = []
+    for dt in dates:
+        if dt.tzinfo is None:
+            normalized_dates.append(dt.replace(tzinfo=timezone.utc))
+        else:
+            normalized_dates.append(dt.astimezone(timezone.utc))
+
     # Calcolo del tempo totale in giorni
-    total_days = (datetime.now(timezone.utc).replace(tzinfo=None) - dates[0]).days + 1
+    total_days = (datetime.now(timezone.utc) - normalized_dates[0]).days + 1
 
     frequency_per_day = total_emojis / total_days
 
     # Calcolo della distanza media tra le emoji
-    time_diffs = [(dates[i+1] - dates[i]).total_seconds() for i in range(total_emojis - 1) if dates[i+1].tzinfo is not None and dates[i].tzinfo is not None]
+    time_diffs = [
+        (normalized_dates[i + 1] - normalized_dates[i]).total_seconds()
+        for i in range(total_emojis - 1)
+    ]
 
     avg_time_diff_hours = sum(time_diffs) / len(time_diffs) / 3600 if time_diffs else 0
 
-    weekdays = [dt.weekday() for dt in dates]  # 0 = Lunedì, ..., 6 = Domenica
-    hours = [dt.hour for dt in dates]
+    weekdays = [dt.weekday() for dt in normalized_dates]  # 0 = Lunedì, ..., 6 = Domenica
+    hours = [dt.hour for dt in normalized_dates]
 
     most_common_weekday = max(set(weekdays), key=weekdays.count) if weekdays else None
     most_common_hour = max(set(hours), key=hours.count) if hours else None
 
-    last_emoji_date = dates[-1] if dates else None
+    last_emoji_date = normalized_dates[-1] if normalized_dates else None
 
     return {
         "total_emojis": total_emojis,
@@ -239,20 +274,22 @@ def get_user_and_group_stats(group_id: int, user_id: int) -> dict:
     """
     with conn:
         # Recupera tutte le date di invio delle emoji per l'utente specifico
-        c.execute('''SELECT date 
+        user_dates = conn.execute(
+            '''SELECT date 
                      FROM emoji_count 
                      WHERE group_id = ? AND user_id = ? 
-                     ORDER BY date ASC''', 
-                  (group_id, user_id))
-        user_dates = c.fetchall()
+                     ORDER BY date ASC''',
+            (group_id, user_id)
+        ).fetchall()
 
         # Recupera tutte le date di invio delle emoji per tutti gli utenti del gruppo
-        c.execute('''SELECT user_id, date 
+        group_data = conn.execute(
+            '''SELECT user_id, date 
                      FROM emoji_count 
                      WHERE group_id = ? 
-                     ORDER BY user_id, date ASC''', 
-                  (group_id,))
-        group_data = c.fetchall()
+                     ORDER BY user_id, date ASC''',
+            (group_id,)
+        ).fetchall()
     
     if not user_dates:
         return {
@@ -308,14 +345,14 @@ def get_user_and_group_stats(group_id: int, user_id: int) -> dict:
 
 
 
-async def personal_stats(update: Update, context: CallbackContext) -> None:
+async def personal_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     group_id = update.message.chat_id
     user_id = update.message.from_user.id
 
     stats = get_user_and_group_stats(group_id, user_id)
     
     if "error" in stats:
-        update.message.reply_text(stats["error"])
+        await update.message.reply_text(stats["error"])
         return
     
     user_stats = stats["user_stats"]
@@ -340,9 +377,8 @@ async def personal_stats(update: Update, context: CallbackContext) -> None:
     
     await update.message.reply_text(response)
 
-async def chart(update: Update, context: CallbackContext) -> None:
+async def chart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     group_id = update.message.chat_id
-    message = update.message.text
     user_id = update.message.from_user.id
 
     date_delta = {
@@ -350,21 +386,22 @@ async def chart(update: Update, context: CallbackContext) -> None:
         "mese": 30,
         "anno": 365
     }
-    if message not in ["/chart settimana", "/chart mese", "/chart anno"]:
+    if len(context.args) != 1 or context.args[0] not in date_delta:
         await update.message.reply_text("Uso corretto: /chart [settimana|mese|anno]")
         return
 
-    period_type = message.split()[1]
+    period_type = context.args[0]
     days = date_delta[period_type]
     selected_delta = datetime.now(timezone.utc) - timedelta(days=days)
 
     with conn:
-        c.execute('''SELECT user_id, date 
+        data = conn.execute(
+            '''SELECT user_id, date 
                     FROM emoji_count 
                     WHERE user_id = ? AND group_id = ? AND date >= ? 
-                    ORDER BY date ASC''', 
-                (user_id, group_id, selected_delta.isoformat()))
-        data = c.fetchall()
+                    ORDER BY date ASC''',
+            (user_id, group_id, selected_delta.isoformat())
+        ).fetchall()
 
     if not data:
         await update.message.reply_text("Nessun dato disponibile per il grafico.")
@@ -407,9 +444,30 @@ async def chart(update: Update, context: CallbackContext) -> None:
     await update.message.reply_photo(photo=buf)
     buf.close()
 
+
+async def post_init(application):
+    commands = [
+        BotCommand("start", "Avvia il bot"),
+        BotCommand("help", "Mostra aiuto"),
+        BotCommand("lastmonth", "Classifica ultimi 30 giorni"),
+        BotCommand("currentmonth", "Classifica mese corrente"),
+        BotCommand("all", "Classifica totale"),
+        BotCommand("lasttime", "Ultima cacca per utente"),
+        BotCommand("personalstat", "Statistiche personali"),
+        BotCommand("chart", "Grafico personale: /chart [settimana|mese|anno]"),
+    ]
+    await application.bot.set_my_commands(commands)
+    await application.bot.set_my_commands(commands, scope=BotCommandScopeAllGroupChats())
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.exception("Errore non gestito durante l'elaborazione di un update", exc_info=context.error)
+
 def main() -> None:
+    if not token:
+        raise RuntimeError("BOT_TOKEN non trovato. Imposta BOT_TOKEN in variabile ambiente o nel file .env")
     
-    app = ApplicationBuilder().token(token).build()
+    app = ApplicationBuilder().token(token).post_init(post_init).build()
 
 
     app.add_handler(CommandHandler("start", start))
@@ -420,7 +478,8 @@ def main() -> None:
     app.add_handler(CommandHandler("lasttime", last_time))
     app.add_handler(CommandHandler("personalstat", personal_stats))
     app.add_handler(CommandHandler("chart", chart))
-    app.add_handler(MessageHandler(filters.TEXT, count_emoji))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, count_emoji))
+    app.add_error_handler(error_handler)
 
     app.run_polling()
 
@@ -428,4 +487,3 @@ def main() -> None:
 if __name__ == '__main__':
     main()
 
-#processo numero 2836688

@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+.env
+emoji_count.db
+*.sqlite
+.git/
+.github/
