@@ -1,10 +1,13 @@
 import logging
 import os
+import random
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from telegram import BotCommand, BotCommandScopeAllGroupChats, Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 import dotenv
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import io
 
@@ -35,7 +38,8 @@ conn.execute('''CREATE INDEX IF NOT EXISTS idx_emoji_group_user_date
 conn.commit()
 
 # Emoji da contare
-TARGET_EMOJI = '💩'  
+TARGET_EMOJI = '💩'
+MILESTONES = [100, 500, 1000, 5000]  
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("Bot avviato! Conta cacche attivata.")
@@ -54,12 +58,23 @@ async def get_username(context: ContextTypes.DEFAULT_TYPE, group_id: int, user_i
         return "Unknown"
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("Questo bot conta una particolare emoji nei gruppi.\n"
-                              "/start - Avvia il bot\n"
-                              "/lastmonth - Mostra il conteggio delle emoji dell'ultimo mese\n"
-                              "/all - Mostra il conteggio totale delle emoji\n"
-                              "/help - Mostra questo \n"
-                              "Se vuoi offrirmi un caffé ecco il link https://www.buymeacoffee.com/montenigri")
+    await update.message.reply_text(
+        "Questo bot conta una particolare emoji nei gruppi.\n\n"
+        "/start - Avvia il bot\n"
+        "/help - Mostra questo\n"
+        "/lastmonth - Classifica ultimi 30 giorni\n"
+        "/currentmonth - Classifica mese corrente\n"
+        "/all - Classifica totale\n"
+        "/lasttime - Ultima cacca per utente\n"
+        "/personalstat - Statistiche personali\n"
+        "/chart [settimana|mese|anno] - Grafico personale\n"
+        "/streak - La tua striscia di 💩 consecutivi\n"
+        "/nostreak - Chi non 💩 da più tempo\n"
+        "/burn - Prendi in giro chi non 💩 da tanto\n"
+        "/ranking [giorno|settimana|mese|anno] - Classifica con medaglie\n"
+        "/monthwinner - Vincitore del mese\n\n"
+        "Se vuoi offrirmi un caffé: https://www.buymeacoffee.com/montenigri"
+    )
 
 async def count_emoji(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
@@ -70,10 +85,16 @@ async def count_emoji(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         user_id = update.message.from_user.id
         date = datetime.now(timezone.utc).isoformat()
 
-        #print(f"User {user_id} used the emoji {TARGET_EMOJI} in group {group_id} at {date}")
-        
         with conn:
             conn.execute("INSERT INTO emoji_count (group_id, user_id, date) VALUES (?, ?, ?)", (group_id, user_id, date))
+            count = conn.execute(
+                "SELECT COUNT(*) FROM emoji_count WHERE group_id = ? AND user_id = ?",
+                (group_id, user_id)
+            ).fetchone()[0]
+
+        if count in MILESTONES:
+            username = await get_username(context, group_id, user_id)
+            await update.message.reply_text(f"🏆 {username} ha raggiunto {count} 💩!")
 
 async def last_month(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     group_id = update.message.chat_id
@@ -205,6 +226,205 @@ async def current_month(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     
     await update.message.reply_text("\n".join(lines))
 
+
+async def streak(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    group_id = update.message.chat_id
+    user_id = update.message.from_user.id
+
+    if context.args:
+        try:
+            user_id = int(context.args[0])
+        except ValueError:
+            user_id = update.message.from_user.id
+
+    with conn:
+        rows = conn.execute(
+            '''SELECT DISTINCT DATE(date) as d
+               FROM emoji_count
+               WHERE group_id = ? AND user_id = ?
+               ORDER BY d''',
+            (group_id, user_id)
+        ).fetchall()
+
+    if not rows:
+        await update.message.reply_text("Nessuna 💩 trovata per questo utente.")
+        return
+
+    dates = [row[0] for row in rows]
+
+    longest = 1
+    current_run = 1
+    for i in range(1, len(dates)):
+        prev = datetime.strptime(dates[i - 1], '%Y-%m-%d').date()
+        curr = datetime.strptime(dates[i], '%Y-%m-%d').date()
+        if (curr - prev).days == 1:
+            current_run += 1
+            longest = max(longest, current_run)
+        else:
+            current_run = 1
+
+    active = 0
+    for i in range(len(dates) - 1, -1, -1):
+        d = datetime.strptime(dates[i], '%Y-%m-%d').date()
+        if i == len(dates) - 1:
+            if (datetime.now(timezone.utc).date() - d).days > 1:
+                active = 0
+                break
+            active = 1
+        else:
+            prev_d = datetime.strptime(dates[i], '%Y-%m-%d').date()
+            next_d = datetime.strptime(dates[i + 1], '%Y-%m-%d').date()
+            if (next_d - prev_d).days == 1:
+                active += 1
+            else:
+                break
+
+    username = await get_username(context, group_id, user_id)
+    await update.message.reply_text(
+        f"💩 Streak di {username}:\n"
+        f"🏆 Record: {longest} giorni consecutivi\n"
+        f"🔥 Serie attiva: {active} giorni"
+    )
+
+
+async def get_nostreak_data(context: ContextTypes.DEFAULT_TYPE, group_id: int) -> list:
+    with conn:
+        rows = conn.execute(
+            '''SELECT user_id, MAX(date) as last_date
+               FROM emoji_count
+               WHERE group_id = ?
+               GROUP BY user_id
+               ORDER BY last_date ASC''',
+            (group_id,)
+        ).fetchall()
+
+    now = datetime.now(timezone.utc)
+    result = []
+    for user_id, last_date_str in rows:
+        last_date = datetime.fromisoformat(last_date_str)
+        if last_date.tzinfo is None:
+            last_date = last_date.replace(tzinfo=timezone.utc)
+        days = (now - last_date).days
+        username = await get_username(context, group_id, user_id)
+        result.append((username, user_id, days, last_date))
+    return result
+
+
+async def nostreak(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    group_id = update.message.chat_id
+    data = await get_nostreak_data(context, group_id)
+
+    if not data:
+        await update.message.reply_text("Nessuna 💩 registrata in questo gruppo.")
+        return
+
+    data.sort(key=lambda x: x[2])
+    lines = ["⏰ Classifica dell'astinenza da 💩 (dal più recente):"]
+    for username, _, days, _ in data:
+        lines.append(f"{username}: {days} giorni fa")
+
+    await update.message.reply_text("\n".join(lines))
+
+
+BURN_ROASTS = [
+    "{0} non 💩 da {1} giorni. Tutto bene a casa?",
+    "{0} è in sciopero della 💩 da {1} giorni!",
+    "{0} ha smesso di 💩 da {1} giorni. Dovremmo preoccuparci?",
+    "{0} non 💩 da {1} giorni. Blocco intestinale?",
+    "{0} sta accumulando da {1} giorni. Sarà un'esplosione atomica.",
+    "{0} non 💩 da {1} giorni. Record personale?",
+]
+
+
+async def burn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    group_id = update.message.chat_id
+    data = await get_nostreak_data(context, group_id)
+
+    if not data:
+        await update.message.reply_text("Nessuna 💩 registrata. Non posso prendere in giro nessuno.")
+        return
+
+    data.sort(key=lambda x: x[2])
+    username, _, days, _ = data[-1]
+    msg = random.choice(BURN_ROASTS).format(username, days)
+    await update.message.reply_text(msg)
+
+
+async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    group_id = update.message.chat_id
+
+    periods = {
+        "giorno": timedelta(days=1),
+        "settimana": timedelta(days=7),
+        "mese": timedelta(days=30),
+        "anno": timedelta(days=365),
+    }
+
+    period_label = "di sempre"
+    if context.args and context.args[0] in periods:
+        delta = periods[context.args[0]]
+        cutoff = datetime.now(timezone.utc) - delta
+        period_label = f"dell'ultimo {context.args[0]}"
+        with conn:
+            results = conn.execute(
+                '''SELECT user_id, COUNT(*)
+                   FROM emoji_count
+                   WHERE group_id = ? AND date >= ?
+                   GROUP BY user_id
+                   ORDER BY COUNT(*) DESC''',
+                (group_id, cutoff.isoformat())
+            ).fetchall()
+    else:
+        with conn:
+            results = conn.execute(
+                '''SELECT user_id, COUNT(*)
+                   FROM emoji_count
+                   WHERE group_id = ?
+                   GROUP BY user_id
+                   ORDER BY COUNT(*) DESC''',
+                (group_id,)
+            ).fetchall()
+
+    if not results:
+        await update.message.reply_text("Nessun dato disponibile.")
+        return
+
+    medals = ["🥇", "🥈", "🥉"]
+    lines = [f"🏆 Classifica {period_label}:"]
+    for i, (user_id, count) in enumerate(results):
+        username = await get_username(context, group_id, user_id)
+        medal = medals[i] if i < 3 else f"{i + 1}."
+        lines.append(f"{medal} {username}: {count}")
+
+    await update.message.reply_text("\n".join(lines))
+
+
+async def month_winner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    group_id = update.message.chat_id
+    now = datetime.now(timezone.utc)
+    start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    with conn:
+        results = conn.execute(
+            '''SELECT user_id, COUNT(*)
+               FROM emoji_count
+               WHERE group_id = ? AND date >= ?
+               GROUP BY user_id
+               ORDER BY COUNT(*) DESC
+               LIMIT 1''',
+            (group_id, start_of_month.isoformat())
+        ).fetchone()
+
+    if not results:
+        await update.message.reply_text("Nessun dato per questo mese.")
+        return
+
+    user_id, count = results
+    username = await get_username(context, group_id, user_id)
+    month_name = now.strftime('%B')
+    await update.message.reply_text(
+        f"👑 Il re di {month_name} è {username} con {count} 💩!"
+    )
 
 
 def calculate_user_stats(dates: list[datetime]) -> dict:
@@ -454,10 +674,19 @@ async def post_init(application):
         BotCommand("all", "Classifica totale"),
         BotCommand("lasttime", "Ultima cacca per utente"),
         BotCommand("personalstat", "Statistiche personali"),
-        BotCommand("chart", "Grafico personale: /chart [settimana|mese|anno]"),
+        BotCommand("chart", "Grafico personale"),
+        BotCommand("streak", "La tua striscia di 💩"),
+        BotCommand("nostreak", "Astinenza da 💩"),
+        BotCommand("burn", "Prendi in giro chi non 💩"),
+        BotCommand("ranking", "Classifica con medaglie"),
+        BotCommand("monthwinner", "Vincitore del mese"),
     ]
-    await application.bot.set_my_commands(commands)
-    await application.bot.set_my_commands(commands, scope=BotCommandScopeAllGroupChats())
+    try:
+        await application.bot.set_my_commands(commands)
+        await application.bot.set_my_commands(commands, scope=BotCommandScopeAllGroupChats())
+        logger.info("Comandi Telegram registrati con successo")
+    except Exception as e:
+        logger.error(f"Errore registrazione comandi: {e}")
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -478,6 +707,11 @@ def main() -> None:
     app.add_handler(CommandHandler("lasttime", last_time))
     app.add_handler(CommandHandler("personalstat", personal_stats))
     app.add_handler(CommandHandler("chart", chart))
+    app.add_handler(CommandHandler("streak", streak))
+    app.add_handler(CommandHandler("nostreak", nostreak))
+    app.add_handler(CommandHandler("burn", burn))
+    app.add_handler(CommandHandler("ranking", ranking))
+    app.add_handler(CommandHandler("monthwinner", month_winner))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, count_emoji))
     app.add_error_handler(error_handler)
 
