@@ -49,6 +49,9 @@ async def get_username(context: ContextTypes.DEFAULT_TYPE, group_id: int, user_i
     cache = context.chat_data.setdefault("username_cache", {})
     try:
         member = await context.bot.get_chat_member(group_id, user_id)
+        if member.status in ('left', 'kicked'):
+            cache.pop(user_id, None)
+            return None
         username = member.user.username or f"{member.user.first_name} {member.user.last_name or ''}".strip()
         cache[user_id] = username
         return username
