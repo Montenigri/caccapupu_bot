@@ -47,19 +47,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def get_username(context: ContextTypes.DEFAULT_TYPE, group_id: int, user_id: int) -> str | None:
     cache = context.chat_data.setdefault("username_cache", {})
-    if user_id in cache:
-        return cache[user_id]
     try:
         member = await context.bot.get_chat_member(group_id, user_id)
         username = member.user.username or f"{member.user.first_name} {member.user.last_name or ''}".strip()
         cache[user_id] = username
         return username
     except BadRequest:
-        cache[user_id] = None
+        cache.pop(user_id, None)
         return None
     except Exception as e:
         logger.error(f"Errore nel recuperare l'username per user_id {user_id} in group_id {group_id}: {e}")
-        return None
+        return cache.get(user_id)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
