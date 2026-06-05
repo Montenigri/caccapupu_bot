@@ -4,6 +4,7 @@ import random
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from telegram import BotCommand, BotCommandScopeAllGroupChats, Update
+from telegram.error import BadRequest
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 import dotenv
 import matplotlib
@@ -44,7 +45,7 @@ MILESTONES = [100, 500, 1000, 5000]
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("Bot avviato! Conta cacche attivata.")
 
-async def get_username(context: ContextTypes.DEFAULT_TYPE, group_id: int, user_id: int) -> str:
+async def get_username(context: ContextTypes.DEFAULT_TYPE, group_id: int, user_id: int) -> str | None:
     cache = context.chat_data.setdefault("username_cache", {})
     if user_id in cache:
         return cache[user_id]
@@ -53,9 +54,12 @@ async def get_username(context: ContextTypes.DEFAULT_TYPE, group_id: int, user_i
         username = member.user.username or f"{member.user.first_name} {member.user.last_name or ''}".strip()
         cache[user_id] = username
         return username
+    except BadRequest:
+        cache[user_id] = None
+        return None
     except Exception as e:
         logger.error(f"Errore nel recuperare l'username per user_id {user_id} in group_id {group_id}: {e}")
-        return "Unknown"
+        return None
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
@@ -94,7 +98,8 @@ async def count_emoji(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         if count in MILESTONES:
             username = await get_username(context, group_id, user_id)
-            await update.message.reply_text(f"🏆 {username} ha raggiunto {count} 💩!")
+            if username:
+                await update.message.reply_text(f"🏆 {username} ha raggiunto {count} 💩!")
 
 async def last_month(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     group_id = update.message.chat_id
@@ -109,7 +114,8 @@ async def last_month(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     lines = ["Conteggio delle cacche nell'ultimo mese:"]
     for user_id, count in results:
         username = await get_username(context, group_id, user_id)
-        lines.append(f"{username}: {count}")
+        if username:
+            lines.append(f"{username}: {count}")
     
     await update.message.reply_text("\n".join(lines))
 
@@ -138,7 +144,8 @@ async def all_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lines = [f"Conteggio totale delle emoji (prima cacca registrata il {first_date_formatted}):"]
     for user_id, count, _ in results:
         username = await get_username(context, group_id, user_id)
-        lines.append(f"{username}: {count}")
+        if username:
+            lines.append(f"{username}: {count}")
     
     await update.message.reply_text("\n".join(lines))
 
@@ -192,6 +199,8 @@ async def last_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lines = ["Ultima volta che ogni utente ha inviato l'emoji:"]
     for user_id, last_date in results:
         username = await get_username(context, group_id, user_id)
+        if not username:
+            continue
         last_date_dt = datetime.fromisoformat(last_date)
         if not last_date_dt.tzinfo:
             last_date_dt = last_date_dt.replace(tzinfo=timezone.utc)
@@ -222,7 +231,8 @@ async def current_month(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     lines = ["Conteggio delle emoji nel mese corrente:"]
     for user_id, count in results:
         username = await get_username(context, group_id, user_id)
-        lines.append(f"{username}: {count}")
+        if username:
+            lines.append(f"{username}: {count}")
     
     await update.message.reply_text("\n".join(lines))
 
@@ -280,6 +290,9 @@ async def streak(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 break
 
     username = await get_username(context, group_id, user_id)
+    if not username:
+        await update.message.reply_text("Utente non trovato nel gruppo.")
+        return
     await update.message.reply_text(
         f"💩 Streak di {username}:\n"
         f"🏆 Record: {longest} giorni consecutivi\n"
@@ -306,7 +319,8 @@ async def get_nostreak_data(context: ContextTypes.DEFAULT_TYPE, group_id: int) -
             last_date = last_date.replace(tzinfo=timezone.utc)
         days = (now - last_date).days
         username = await get_username(context, group_id, user_id)
-        result.append((username, user_id, days, last_date))
+        if username:
+            result.append((username, user_id, days, last_date))
     return result
 
 
@@ -391,9 +405,13 @@ async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     medals = ["🥇", "🥈", "🥉"]
     lines = [f"🏆 Classifica {period_label}:"]
-    for i, (user_id, count) in enumerate(results):
+    rank = 0
+    for user_id, count in results:
         username = await get_username(context, group_id, user_id)
-        medal = medals[i] if i < 3 else f"{i + 1}."
+        if not username:
+            continue
+        rank += 1
+        medal = medals[rank - 1] if rank <= 3 else f"{rank}."
         lines.append(f"{medal} {username}: {count}")
 
     await update.message.reply_text("\n".join(lines))
@@ -421,6 +439,9 @@ async def month_winner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     user_id, count = results
     username = await get_username(context, group_id, user_id)
+    if not username:
+        await update.message.reply_text("Nessun dato per questo mese.")
+        return
     month_name = now.strftime('%B')
     await update.message.reply_text(
         f"👑 Il re di {month_name} è {username} con {count} 💩!"
